@@ -422,43 +422,32 @@ async def do_login(page, username: str, password: str, otp: str, log: Logger) ->
             )
             log.info(f"  שדות קלט בדף: {visible_inputs}")
 
-            # Try selectors from most-specific to broadest
+            # The OTP page has a single plain input — just fill the first visible one
             otp_filled = False
-            for sel in [
-                'input[name="otp"]', 'input[name="code"]', 'input[name="token"]',
-                'input[name="verification"]', 'input[name="verify"]',
-                'input[name="auth"]', 'input[name="pin"]',
-                'input[placeholder*="קוד"]', 'input[placeholder*="code"]',
-                'input[placeholder*="אימות"]', 'input[placeholder*="verification"]',
-                'input[type="number"]', 'input[inputmode="numeric"]',
-                'input[autocomplete="one-time-code"]', 'input[type="tel"]',
-                # Broadest fallback: any text input not already filled with user/pass
-                'input[type="text"]:not([name*="user"]):not([name*="email"]):not([name*="pass"])',
-                'input:not([type="password"]):not([type="email"]):not([type="hidden"])',
-            ]:
-                try:
-                    el = page.locator(sel).first
-                    if await el.is_visible(timeout=600):
-                        await el.fill(otp)
-                        log.info(f"  OTP הוזן בשדה: {sel}")
-                        otp_filled = True
-                        break
-                except Exception:
-                    pass
+            try:
+                otp_input = page.locator(
+                    'input:not([type="password"]):not([type="hidden"])'
+                ).first
+                await otp_input.wait_for(state="visible", timeout=5000)
+                await otp_input.fill(otp)
+                log.info("  OTP הוזן בהצלחה")
+                otp_filled = True
+            except Exception as e:
+                log.info(f"  שדה OTP לא נמצא: {e}")
 
-            if not otp_filled:
-                log.info("  שדה OTP לא נמצא — בדוק את הארטיפקט otp_page_*.png")
-            else:
+            if otp_filled:
+                # Button text is "אשר קוד"
                 for btn_sel in [
-                    'button[type="submit"]', 'button:has-text("אמת")',
-                    'button:has-text("אישור")', 'button:has-text("המשך")',
-                    'button:has-text("כניסה")', 'button:has-text("Verify")',
-                    'button:has-text("Submit")', 'button:has-text("Continue")',
+                    'button:has-text("אשר קוד")',
+                    'button[type="submit"]',
+                    'button:has-text("אמת")', 'button:has-text("אישור")',
+                    'button:has-text("המשך")', 'button:has-text("Verify")',
                 ]:
                     try:
                         btn = page.locator(btn_sel).first
-                        if await btn.is_visible(timeout=600):
+                        if await btn.is_visible(timeout=800):
                             await btn.click()
+                            log.info(f"  לחיצה על: {btn_sel}")
                             break
                     except Exception:
                         pass
