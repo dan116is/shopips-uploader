@@ -43,6 +43,7 @@ jobs:
         env:
           KONIMBO_USERNAME: ${{ secrets.KONIMBO_USERNAME }}
           KONIMBO_PASSWORD: ${{ secrets.KONIMBO_PASSWORD }}
+          KONIMBO_OTP: ${{ secrets.KONIMBO_OTP }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
         run: python uploader.py
 

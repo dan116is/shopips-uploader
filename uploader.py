@@ -272,44 +272,80 @@ async def add_images_to_form(page, image_urls: list[str], log: Logger):
 # Main product upload flow
 # ---------------------------------------------------------------------------
 
-async def upload_one_product(page, context, product: dict, log: Logger) -> tuple[bool, str]:
-    sku = product["second_code"]
-    name = product["title"]
-    log.info(f"--- מעלה: {name} (מק\"ט: {sku}) ---")
+async def upload_next_product(page, context, product_lookup: dict, log: Logger) -> tuple[bool, str, str]:
+    """
+    Click the first visible 'העלה לאתר' button, read the SKU from the opened
+    form, enrich with data from product_lookup (products.json), fill all
+    fields, and submit.  Returns (ok, konimbo_id, sku).
+    """
+    konimbo_id_from_api: list[str] = []
+
+    async def _on_response(response):
+        if "bnext-api" in response.url and response.request.method in ("PUT", "POST"):
+            try:
+                body = await response.json()
+                item_id = (
+                    body.get("id")
+                    or body.get("item", {}).get("id")
+                    or body.get("konimbo_id")
+                )
+                if item_id:
+                    konimbo_id_from_api.append(str(item_id))
+            except Exception:
+                pass
+
+    page.on("response", _on_response)
+    sku = "unknown"
 
     try:
-        # Find and click "העלה לאתר" for this SKU row
-        row = page.locator(f'tr:has-text("{sku}")').first
-        upload_btn = row.locator('button:has-text("העלה לאתר")').first
-        await upload_btn.wait_for(state="visible", timeout=5000)
-        await upload_btn.click()
+        # Always click the FIRST pending button (list shrinks after each upload)
+        btn = page.locator('button:has-text("העלה לאתר")').first
+        await btn.wait_for(state="visible", timeout=5000)
+        await btn.click()
         await page.wait_for_timeout(2000)
 
-        # Verify the dialog opened by checking second_code value
-        form_sku = await page.evaluate('document.getElementById("second_code")?.value || ""')
-        log.info(f"  מק\"ט בטופס: {form_sku}")
+        # Read SKU (and title) from the now-open form
+        sku = await page.evaluate('document.getElementById("second_code")?.value || ""')
+        title = await page.evaluate(
+            'document.getElementById("title")?.value || '
+            'document.getElementById("name")?.value || ""'
+        )
+        log.info(f"--- מעלה: {title or sku} (מק\"ט: {sku}) ---")
+
+        # Look up enrichment data; fall back to empty dict for unknown products
+        p = product_lookup.get(sku, {})
+        if not p:
+            log.info("  [JSON] מוצר לא ב-products.json — מעלה עם ברירות מחדל")
 
         # ----- Fill text fields by ID -----
-        await set_by_id(page, "warranty",     product["warranty"])
-        await set_by_id(page, "price",        product["price"])
-        await set_by_id(page, "origin_price", product["origin_price"])
-        await set_by_id(page, "seo_title",    product["seo_title"])
-        await set_by_id(page, "seo_keywords", product["seo_keywords"])
-        await set_by_id(page, "slug",         product["slug"])
+        await set_by_id(page, "warranty",      p.get("warranty", "אחריות יצרן"))
+        await set_by_id(page, "delivery_time", p.get("delivery_time", "3"))
+
+        if p.get("price"):
+            await set_by_id(page, "price",        p["price"])
+        if p.get("origin_price"):
+            await set_by_id(page, "origin_price", p["origin_price"])
+        if p.get("seo_title"):
+            await set_by_id(page, "seo_title",    p["seo_title"])
+        if p.get("seo_keywords"):
+            await set_by_id(page, "seo_keywords", p["seo_keywords"])
+        if p.get("slug"):
+            await set_by_id(page, "slug",         p["slug"])
 
         # ----- Textareas by index -----
-        # Index 2 = desc, index 14 = seo_description (per original spec)
-        await set_by_index(page, 2,  product["desc"])
-        await set_by_index(page, 14, product["seo_description"])
+        if p.get("desc"):
+            await set_by_index(page, 2, p["desc"])
+        if p.get("seo_description"):
+            await set_by_index(page, 14, p["seo_description"])
 
         # ----- Category -----
-        await select_category(page, product["category"], product["category_search"], log)
+        if p.get("category"):
+            await select_category(page, p["category"], p.get("category_search", p["category"]), log)
 
         # ----- Images -----
-        images = list(product.get("images") or [])
-        if not images and product.get("makorhachashmal_search"):
-            images = await fetch_makur_images(context, product["makorhachashmal_search"], log)
-
+        images = list(p.get("images") or [])
+        if not images and p.get("makorhachashmal_search"):
+            images = await fetch_makur_images(context, p["makorhachashmal_search"], log)
         if images:
             await add_images_to_form(page, images, log)
         else:
@@ -321,37 +357,40 @@ async def upload_one_product(page, context, product: dict, log: Logger) -> tuple
         await submit_btn.click()
         await page.wait_for_timeout(3000)
 
-        # Try to read Konimbo ID from success notification
+        # Prefer API-captured ID; fall back to notification text
         konimbo_id = ""
-        for sel in ['.success', '[class*="success"]', '.alert-success', '.notification']:
-            try:
-                el = page.locator(sel).first
-                if await el.is_visible(timeout=1500):
-                    konimbo_id = (await el.inner_text()).strip()[:120]
-                    break
-            except Exception:
-                pass
+        if konimbo_id_from_api:
+            konimbo_id = f"Konimbo ID #{konimbo_id_from_api[-1]}"
+        else:
+            for sel in ['.success', '[class*="success"]', '.alert-success', '.notification']:
+                try:
+                    el = page.locator(sel).first
+                    if await el.is_visible(timeout=1500):
+                        konimbo_id = (await el.inner_text()).strip()[:120]
+                        break
+                except Exception:
+                    pass
 
         log.info(f"  הועלה בהצלחה! {konimbo_id}")
-
-        # Close dialog (never Escape!)
         await safe_close_dialog(page)
         await page.wait_for_timeout(1500)
-        return True, konimbo_id
+        return True, konimbo_id, sku
 
     except Exception as e:
         log.info(f"  שגיאה: {e}")
         await screenshot_on_error(page, sku)
         await safe_close_dialog(page)
         await page.wait_for_timeout(1000)
-        return False, str(e)
+        return False, str(e), sku
+    finally:
+        page.remove_listener("response", _on_response)
 
 
 # ---------------------------------------------------------------------------
 # Login
 # ---------------------------------------------------------------------------
 
-async def do_login(page, username: str, password: str, log: Logger) -> bool:
+async def do_login(page, username: str, password: str, otp: str, log: Logger) -> bool:
     log.info("מתחבר לאתר...")
     try:
         u_input = page.locator(
@@ -368,6 +407,28 @@ async def do_login(page, username: str, password: str, log: Logger) -> bool:
         ).first
         await submit.click()
         await page.wait_for_timeout(4000)
+
+        # ── Step 2: OTP / verification code (fixed code) ─────────────────────
+        if "NewProducts" not in page.url and otp:
+            log.info("מזין קוד אימות...")
+            otp_input = page.locator(
+                'input[name="otp"], input[name="code"], input[name="token"], '
+                'input[placeholder*="קוד"], input[placeholder*="code"], '
+                'input[type="number"], input[inputmode="numeric"], '
+                'input[autocomplete="one-time-code"]'
+            ).first
+            try:
+                await otp_input.wait_for(state="visible", timeout=5000)
+                await otp_input.fill(otp)
+                otp_submit = page.locator(
+                    'button[type="submit"], button:has-text("אמת"), '
+                    'button:has-text("אישור"), button:has-text("המשך"), '
+                    'button:has-text("Verify"), button:has-text("Submit")'
+                ).first
+                await otp_submit.click()
+                await page.wait_for_timeout(4000)
+            except PWTimeout:
+                log.info("  שדה OTP לא נמצא — ממשיך בלעדיו")
 
         if "NewProducts" in page.url or page.url.rstrip("/") == MANAGEMENT_URL.rstrip("/"):
             log.info("התחברות הצליחה!")
@@ -391,9 +452,12 @@ async def main():
 
     products_path = Path(__file__).parent / "products.json"
     products = json.loads(products_path.read_text(encoding="utf-8"))
+    # Build a lookup dict for O(1) enrichment by SKU
+    product_lookup = {p["second_code"]: p for p in products}
 
     username = os.environ.get("KONIMBO_USERNAME", "")
     password = os.environ.get("KONIMBO_PASSWORD", "")
+    otp      = os.environ.get("KONIMBO_OTP", "")
     dry_run  = os.environ.get("DRY_RUN", "false").lower() == "true"
 
     if dry_run:
@@ -424,13 +488,13 @@ async def main():
         if "NewProducts" not in page.url:
             if not username or not password:
                 log.info(
-                    "נדרשת כניסה — הגדר את הסודות KONIMBO_USERNAME ו-KONIMBO_PASSWORD ב-GitHub Secrets"
+                    "נדרשת כניסה — הגדר את הסודות KONIMBO_USERNAME, KONIMBO_PASSWORD ו-KONIMBO_OTP ב-GitHub Secrets"
                 )
                 log.save()
                 await browser.close()
                 sys.exit(1)
 
-            ok = await do_login(page, username, password, log)
+            ok = await do_login(page, username, password, otp, log)
             if not ok:
                 log.info("כניסה נכשלה — עוצר")
                 log.save()
@@ -439,9 +503,13 @@ async def main():
 
             await page.goto(MANAGEMENT_URL, wait_until="networkidle", timeout=30000)
 
+        # ── Diagnostic screenshot after login ────────────────────────────────
+        snap = LOGS_DIR / f"page_after_login_{datetime.now().strftime('%H%M%S')}.png"
+        await page.screenshot(path=str(snap))
+        log.info(f"צילום מסך נשמר: {snap}")
+
         # ── Check how many products are waiting ──────────────────────────────
-        upload_btns = page.locator('button:has-text("העלה לאתר")')
-        pending_count = await upload_btns.count()
+        pending_count = await page.locator('button:has-text("העלה לאתר")').count()
         log.info(f"מוצרים הממתינים להעלאה: {pending_count}")
 
         if pending_count == 0:
@@ -450,35 +518,35 @@ async def main():
             await browser.close()
             return
 
-        # ── Process each product from the catalog ────────────────────────────
-        for product in products:
-            sku = product["second_code"]
+        if dry_run:
+            log.info(f"[DRY RUN] היו מועלים {pending_count} מוצרים — לא מבצע")
+            await browser.close()
+            log.save()
+            return
 
-            # Skip if this SKU has no pending upload button on page
-            row_btn = page.locator(f'tr:has-text("{sku}") button:has-text("העלה לאתר")')
-            if await row_btn.count() == 0:
-                log.info(f"מק\"ט {sku} — כבר הועלה או לא בטבלה, מדלג")
-                continue
+        # ── Process ALL pending products from the page ───────────────────────
+        # We always click the first button; after each upload it disappears,
+        # so the next iteration picks up the new first one automatically.
+        upload_count = pending_count  # snapshot — actual count may vary
+        for i in range(upload_count):
+            remaining = await page.locator('button:has-text("העלה לאתר")').count()
+            if remaining == 0:
+                break
+            log.info(f"[{i + 1}/{upload_count}] נותרו בדף: {remaining}")
 
-            if dry_run:
-                log.info(f"[DRY RUN] היה מעלה: {product['title']}")
-                continue
-
-            ok, detail = await upload_one_product(page, context, product, log)
+            ok, detail, sku = await upload_next_product(page, context, product_lookup, log)
+            entry = {"sku": sku, "detail": detail}
             if ok:
-                success_list.append({"product": product, "detail": detail})
+                success_list.append(entry)
             else:
-                failed_list.append({"product": product, "error": detail})
+                failed_list.append({**entry, "error": detail})
 
-            # Slight pause between uploads to avoid overloading the server
+            # Brief pause between uploads
             await page.wait_for_timeout(2000)
 
-            # Refresh token if needed (re-navigate every 25 minutes isn't needed
-            # here since each product takes < 1 min, but guard with 401 check)
-            response_ok = await page.evaluate(
-                "() => document.body ? true : false"
-            )
-            if not response_ok:
+            # Guard: if page lost its body (e.g. token expired), re-navigate
+            alive = await page.evaluate("() => !!document.body")
+            if not alive:
                 log.info("דף לא תקין — מרענן...")
                 await page.goto(MANAGEMENT_URL, wait_until="networkidle", timeout=20000)
 
@@ -490,12 +558,10 @@ async def main():
     log.info(f"תאריך: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     log.info(f"הועלו בהצלחה: {len(success_list)}")
     for item in success_list:
-        p = item["product"]
-        log.info(f"  ✓ {p['second_code']} | {p['title']} | {item['detail']}")
+        log.info(f"  ✓ {item['sku']} | {item['detail']}")
     log.info(f"נכשלו: {len(failed_list)}")
     for item in failed_list:
-        p = item["product"]
-        log.info(f"  ✗ {p['second_code']} | {p['title']} | סיבה: {item['error']}")
+        log.info(f"  ✗ {item['sku']} | סיבה: {item['error']}")
     log.info("=================================")
 
     log_file = log.save()
