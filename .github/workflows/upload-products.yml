@@ -1,0 +1,55 @@
+name: Upload New Products to Shopips
+
+on:
+  # Run every day at 09:00 Israel time (06:00 UTC)
+  schedule:
+    - cron: '0 6 * * *'
+
+  # Allow manual trigger from GitHub UI with optional dry-run
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — show what would upload, but do nothing'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  upload:
+    name: Upload pending products
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run product uploader
+        env:
+          KONIMBO_USERNAME: ${{ secrets.KONIMBO_USERNAME }}
+          KONIMBO_PASSWORD: ${{ secrets.KONIMBO_PASSWORD }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: python uploader.py
+
+      - name: Upload run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upload-log-${{ github.run_id }}
+          path: logs/
+          retention-days: 60
