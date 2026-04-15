@@ -378,7 +378,7 @@ async def upload_one_product(page, context, product: dict, log: Logger) -> tuple
 # Login
 # ---------------------------------------------------------------------------
 
-async def do_login(page, username: str, password: str, log: Logger) -> bool:
+async def do_login(page, username: str, password: str, otp: str, log: Logger) -> bool:
     log.info("מתחבר לאתר...")
     try:
         u_input = page.locator(
@@ -395,6 +395,28 @@ async def do_login(page, username: str, password: str, log: Logger) -> bool:
         ).first
         await submit.click()
         await page.wait_for_timeout(4000)
+
+        # ── Step 2: OTP / verification code (fixed code) ─────────────────────
+        if "NewProducts" not in page.url and otp:
+            log.info("מזין קוד אימות...")
+            otp_input = page.locator(
+                'input[name="otp"], input[name="code"], input[name="token"], '
+                'input[placeholder*="קוד"], input[placeholder*="code"], '
+                'input[type="number"], input[inputmode="numeric"], '
+                'input[autocomplete="one-time-code"]'
+            ).first
+            try:
+                await otp_input.wait_for(state="visible", timeout=5000)
+                await otp_input.fill(otp)
+                otp_submit = page.locator(
+                    'button[type="submit"], button:has-text("אמת"), '
+                    'button:has-text("אישור"), button:has-text("המשך"), '
+                    'button:has-text("Verify"), button:has-text("Submit")'
+                ).first
+                await otp_submit.click()
+                await page.wait_for_timeout(4000)
+            except PWTimeout:
+                log.info("  שדה OTP לא נמצא — ממשיך בלעדיו")
 
         if "NewProducts" in page.url or page.url.rstrip("/") == MANAGEMENT_URL.rstrip("/"):
             log.info("התחברות הצליחה!")
@@ -421,6 +443,7 @@ async def main():
 
     username = os.environ.get("KONIMBO_USERNAME", "")
     password = os.environ.get("KONIMBO_PASSWORD", "")
+    otp      = os.environ.get("KONIMBO_OTP", "")
     dry_run  = os.environ.get("DRY_RUN", "false").lower() == "true"
 
     if dry_run:
@@ -451,13 +474,13 @@ async def main():
         if "NewProducts" not in page.url:
             if not username or not password:
                 log.info(
-                    "נדרשת כניסה — הגדר את הסודות KONIMBO_USERNAME ו-KONIMBO_PASSWORD ב-GitHub Secrets"
+                    "נדרשת כניסה — הגדר את הסודות KONIMBO_USERNAME, KONIMBO_PASSWORD ו-KONIMBO_OTP ב-GitHub Secrets"
                 )
                 log.save()
                 await browser.close()
                 sys.exit(1)
 
-            ok = await do_login(page, username, password, log)
+            ok = await do_login(page, username, password, otp, log)
             if not ok:
                 log.info("כניסה נכשלה — עוצר")
                 log.save()
