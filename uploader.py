@@ -411,24 +411,58 @@ async def do_login(page, username: str, password: str, otp: str, log: Logger) ->
         # ── Step 2: OTP / verification code (fixed code) ─────────────────────
         if "NewProducts" not in page.url and otp:
             log.info("מזין קוד אימות...")
-            otp_input = page.locator(
-                'input[name="otp"], input[name="code"], input[name="token"], '
-                'input[placeholder*="קוד"], input[placeholder*="code"], '
-                'input[type="number"], input[inputmode="numeric"], '
-                'input[autocomplete="one-time-code"]'
-            ).first
-            try:
-                await otp_input.wait_for(state="visible", timeout=5000)
-                await otp_input.fill(otp)
-                otp_submit = page.locator(
-                    'button[type="submit"], button:has-text("אמת"), '
-                    'button:has-text("אישור"), button:has-text("המשך"), '
-                    'button:has-text("Verify"), button:has-text("Submit")'
-                ).first
-                await otp_submit.click()
+
+            # Screenshot + input dump for diagnosis
+            snap = LOGS_DIR / f"otp_page_{datetime.now().strftime('%H%M%S')}.png"
+            await page.screenshot(path=str(snap))
+            visible_inputs = await page.evaluate(
+                "() => Array.from(document.querySelectorAll('input')).map(el => "
+                "({type:el.type, name:el.name, id:el.id, placeholder:el.placeholder, "
+                "class:el.className.substring(0,60)}))"
+            )
+            log.info(f"  שדות קלט בדף: {visible_inputs}")
+
+            # Try selectors from most-specific to broadest
+            otp_filled = False
+            for sel in [
+                'input[name="otp"]', 'input[name="code"]', 'input[name="token"]',
+                'input[name="verification"]', 'input[name="verify"]',
+                'input[name="auth"]', 'input[name="pin"]',
+                'input[placeholder*="קוד"]', 'input[placeholder*="code"]',
+                'input[placeholder*="אימות"]', 'input[placeholder*="verification"]',
+                'input[type="number"]', 'input[inputmode="numeric"]',
+                'input[autocomplete="one-time-code"]', 'input[type="tel"]',
+                # Broadest fallback: any text input not already filled with user/pass
+                'input[type="text"]:not([name*="user"]):not([name*="email"]):not([name*="pass"])',
+                'input:not([type="password"]):not([type="email"]):not([type="hidden"])',
+            ]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.is_visible(timeout=600):
+                        await el.fill(otp)
+                        log.info(f"  OTP הוזן בשדה: {sel}")
+                        otp_filled = True
+                        break
+                except Exception:
+                    pass
+
+            if not otp_filled:
+                log.info("  שדה OTP לא נמצא — בדוק את הארטיפקט otp_page_*.png")
+            else:
+                for btn_sel in [
+                    'button[type="submit"]', 'button:has-text("אמת")',
+                    'button:has-text("אישור")', 'button:has-text("המשך")',
+                    'button:has-text("כניסה")', 'button:has-text("Verify")',
+                    'button:has-text("Submit")', 'button:has-text("Continue")',
+                ]:
+                    try:
+                        btn = page.locator(btn_sel).first
+                        if await btn.is_visible(timeout=600):
+                            await btn.click()
+                            break
+                    except Exception:
+                        pass
                 await page.wait_for_timeout(4000)
-            except PWTimeout:
-                log.info("  שדה OTP לא נמצא — ממשיך בלעדיו")
 
         if "NewProducts" in page.url or page.url.rstrip("/") == MANAGEMENT_URL.rstrip("/"):
             log.info("התחברות הצליחה!")
