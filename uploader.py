@@ -277,6 +277,27 @@ async def upload_one_product(page, context, product: dict, log: Logger) -> tuple
     name = product["title"]
     log.info(f"--- מעלה: {name} (מק\"ט: {sku}) ---")
 
+    # Capture Konimbo item ID from the API response
+    konimbo_id_from_api: list[str] = []
+
+    async def _on_response(response):
+        url = response.url
+        if "bnext-api" in url and response.request.method in ("PUT", "POST"):
+            try:
+                body = await response.json()
+                # Konimbo returns {"id": 12345, ...}
+                item_id = (
+                    body.get("id")
+                    or body.get("item", {}).get("id")
+                    or body.get("konimbo_id")
+                )
+                if item_id:
+                    konimbo_id_from_api.append(str(item_id))
+            except Exception:
+                pass
+
+    page.on("response", _on_response)
+
     try:
         # Find and click "העלה לאתר" for this SKU row
         row = page.locator(f'tr:has-text("{sku}")').first
@@ -290,12 +311,13 @@ async def upload_one_product(page, context, product: dict, log: Logger) -> tuple
         log.info(f"  מק\"ט בטופס: {form_sku}")
 
         # ----- Fill text fields by ID -----
-        await set_by_id(page, "warranty",     product["warranty"])
-        await set_by_id(page, "price",        product["price"])
-        await set_by_id(page, "origin_price", product["origin_price"])
-        await set_by_id(page, "seo_title",    product["seo_title"])
-        await set_by_id(page, "seo_keywords", product["seo_keywords"])
-        await set_by_id(page, "slug",         product["slug"])
+        await set_by_id(page, "warranty",      product["warranty"])
+        await set_by_id(page, "price",         product["price"])
+        await set_by_id(page, "origin_price",  product["origin_price"])
+        await set_by_id(page, "delivery_time", product.get("delivery_time", "3"))
+        await set_by_id(page, "seo_title",     product["seo_title"])
+        await set_by_id(page, "seo_keywords",  product["seo_keywords"])
+        await set_by_id(page, "slug",          product["slug"])
 
         # ----- Textareas by index -----
         # Index 2 = desc, index 14 = seo_description (per original spec)
@@ -321,16 +343,19 @@ async def upload_one_product(page, context, product: dict, log: Logger) -> tuple
         await submit_btn.click()
         await page.wait_for_timeout(3000)
 
-        # Try to read Konimbo ID from success notification
+        # Prefer the ID captured from the API response; fall back to notification text
         konimbo_id = ""
-        for sel in ['.success', '[class*="success"]', '.alert-success', '.notification']:
-            try:
-                el = page.locator(sel).first
-                if await el.is_visible(timeout=1500):
-                    konimbo_id = (await el.inner_text()).strip()[:120]
-                    break
-            except Exception:
-                pass
+        if konimbo_id_from_api:
+            konimbo_id = f"Konimbo ID #{konimbo_id_from_api[-1]}"
+        else:
+            for sel in ['.success', '[class*="success"]', '.alert-success', '.notification']:
+                try:
+                    el = page.locator(sel).first
+                    if await el.is_visible(timeout=1500):
+                        konimbo_id = (await el.inner_text()).strip()[:120]
+                        break
+                except Exception:
+                    pass
 
         log.info(f"  הועלה בהצלחה! {konimbo_id}")
 
@@ -345,6 +370,8 @@ async def upload_one_product(page, context, product: dict, log: Logger) -> tuple
         await safe_close_dialog(page)
         await page.wait_for_timeout(1000)
         return False, str(e)
+    finally:
+        page.remove_listener("response", _on_response)
 
 
 # ---------------------------------------------------------------------------
