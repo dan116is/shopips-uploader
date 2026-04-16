@@ -266,6 +266,8 @@ async def add_images_to_form(page, image_urls: list[str], log: Logger):
             log.info(f"  [תמונות] שגיאה בהוספת תמונה: {e}")
 
     log.info(f"  [תמונות] הוספו {added}/{len(image_urls)} תמונות")
+    if added < 3:
+        log.info(f"  [תמונות] אזהרה: פחות מ-3 תמונות ({added}) — ממשיך בכל זאת")
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +321,9 @@ async def upload_next_product(page, context, product_lookup: dict, log: Logger) 
 
         # ----- Fill text fields by ID -----
         await set_by_id(page, "warranty",      p.get("warranty", "אחריות יצרן"))
-        await set_by_id(page, "delivery_time", p.get("delivery_time", "3"))
+        dt_ok = await set_by_id(page, "delivery_time", p.get("delivery_time", "3"))
+        if not dt_ok:
+            log.info("  [שדה] delivery_time לא נמצא לפי ID — ממשיך")
 
         if p.get("price"):
             await set_by_id(page, "price",        p["price"])
@@ -558,20 +562,29 @@ async def main():
             log.info(f"[{i + 1}/{upload_count}] נותרו בדף: {remaining}")
 
             ok, detail, sku = await upload_next_product(page, context, product_lookup, log)
-            entry = {"sku": sku, "detail": detail}
+            p_meta = product_lookup.get(sku, {})
+            title  = p_meta.get("title", sku)
+            slug   = p_meta.get("slug", "")
+            url    = f"https://www.shopips.co.il/{slug}" if slug else ""
             if ok:
-                success_list.append(entry)
+                success_list.append({"sku": sku, "title": title, "konimbo_id": detail, "url": url})
             else:
-                failed_list.append({**entry, "error": detail})
+                failed_list.append({"sku": sku, "title": title, "error": detail})
 
             # Brief pause between uploads
             await page.wait_for_timeout(2000)
 
-            # Guard: if page lost its body (e.g. token expired), re-navigate
-            alive = await page.evaluate("() => !!document.body")
-            if not alive:
-                log.info("דף לא תקין — מרענן...")
+            # Guard: token expired → page redirects away from NewProducts
+            if "NewProducts" not in page.url:
+                log.info("Token פג — מתחבר מחדש ומרענן...")
+                await do_login(page, username, password, otp, log)
                 await page.goto(MANAGEMENT_URL, wait_until="networkidle", timeout=20000)
+            else:
+                # Lighter check: body still present
+                alive = await page.evaluate("() => !!document.body")
+                if not alive:
+                    log.info("דף לא תקין — מרענן...")
+                    await page.goto(MANAGEMENT_URL, wait_until="networkidle", timeout=20000)
 
         await browser.close()
 
@@ -579,12 +592,14 @@ async def main():
     log.info("")
     log.info("===== סיכום העלאת מוצרים =====")
     log.info(f"תאריך: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    log.info(f"הועלו בהצלחה: {len(success_list)}")
+    log.info(f"מוצרים שהועלו: {len(success_list)}")
+    log.info("רשימה:")
     for item in success_list:
-        log.info(f"  ✓ {item['sku']} | {item['detail']}")
-    log.info(f"נכשלו: {len(failed_list)}")
+        url_part = f" | {item['url']}" if item["url"] else ""
+        log.info(f"  - {item['sku']} | {item['title']} | {item['konimbo_id']}{url_part}")
+    log.info(f"מוצרים שנכשלו: {len(failed_list)}")
     for item in failed_list:
-        log.info(f"  ✗ {item['sku']} | סיבה: {item['error']}")
+        log.info(f"  - {item['sku']} | {item['title']} | סיבה: {item['error']}")
     log.info("=================================")
 
     log_file = log.save()
