@@ -290,12 +290,14 @@ async def upload_one_product(page, context, product: dict, log: Logger) -> tuple
         log.info(f"  מק\"ט בטופס: {form_sku}")
 
         # ----- Fill text fields by ID -----
-        await set_by_id(page, "warranty",     product["warranty"])
-        await set_by_id(page, "price",        product["price"])
-        await set_by_id(page, "origin_price", product["origin_price"])
-        await set_by_id(page, "seo_title",    product["seo_title"])
-        await set_by_id(page, "seo_keywords", product["seo_keywords"])
-        await set_by_id(page, "slug",         product["slug"])
+        await set_by_id(page, "warranty",       product["warranty"])
+        await set_by_id(page, "price",          product["price"])
+        await set_by_id(page, "origin_price",   product["origin_price"])
+        await set_by_id(page, "seo_title",      product["seo_title"])
+        await set_by_id(page, "seo_keywords",   product["seo_keywords"])
+        await set_by_id(page, "slug",           product["slug"])
+        if product.get("delivery_time"):
+            await set_by_id(page, "delivery_time", product["delivery_time"])
 
         # ----- Textareas by index -----
         # Index 2 = desc, index 14 = seo_description (per original spec)
@@ -314,6 +316,9 @@ async def upload_one_product(page, context, product: dict, log: Logger) -> tuple
             await add_images_to_form(page, images, log)
         else:
             log.info("  [תמונות] אין תמונות זמינות — ממשיך בלי תמונות")
+
+        if len(images) < 3:
+            log.info(f"  ⚠️  [תמונות] פחות מ-3 תמונות ({len(images)}) — מומלץ לבדוק ידנית")
 
         # ----- Submit -----
         submit_btn = page.locator('button:has-text("סיום"), button:has-text("שמור")').last
@@ -473,14 +478,17 @@ async def main():
             # Slight pause between uploads to avoid overloading the server
             await page.wait_for_timeout(2000)
 
-            # Refresh token if needed (re-navigate every 25 minutes isn't needed
-            # here since each product takes < 1 min, but guard with 401 check)
-            response_ok = await page.evaluate(
-                "() => document.body ? true : false"
-            )
-            if not response_ok:
-                log.info("דף לא תקין — מרענן...")
-                await page.goto(MANAGEMENT_URL, wait_until="networkidle", timeout=20000)
+            # Re-check auth: if redirected away from NewProducts the JWT expired
+            if "NewProducts" not in page.url:
+                log.info("Token פג (401) — מנווט מחדש ומתחבר שוב...")
+                await page.goto(MANAGEMENT_URL, wait_until="networkidle", timeout=30000)
+                if "NewProducts" not in page.url:
+                    ok2 = await do_login(page, username, password, log)
+                    if ok2:
+                        await page.goto(MANAGEMENT_URL, wait_until="networkidle", timeout=30000)
+                    else:
+                        log.info("כניסה מחדש נכשלה — עוצר")
+                        break
 
         await browser.close()
 
