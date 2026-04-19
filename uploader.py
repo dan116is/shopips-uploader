@@ -217,7 +217,15 @@ async def select_category(page, category: str, search_hint: str, log: Logger):
             text = await first_opt.inner_text()
             await first_opt.click()
             log.info(f"  [קטגוריה] נבחרה (fallback): {text.strip()}")
+            return
     except Exception:
+        pass
+
+    # Second fallback for accessories: retry with "נגנ" → "נגנים"
+    if search_hint == "אביזר":
+        log.info(f"  [קטגוריה] לא נמצאה '{category}' — מנסה נגנים כ-fallback")
+        await select_category(page, "נגנים", "נגנ", log)
+    else:
         log.info(f"  [קטגוריה] לא הצלחנו לבחור קטגוריה")
 
 
@@ -347,9 +355,11 @@ async def upload_next_product(page, context, product_lookup: dict, log: Logger) 
         if not images and p.get("makorhachashmal_search"):
             images = await fetch_makur_images(context, p["makorhachashmal_search"], log)
         if images:
+            if len(images) < 3:
+                log.info(f"  [תמונות] אזהרה: רק {len(images)} תמונות (מינימום 3 מומלץ)")
             await add_images_to_form(page, images, log)
         else:
-            log.info("  [תמונות] אין תמונות זמינות — ממשיך בלי תמונות")
+            log.info("  [תמונות] אזהרה: אין תמונות זמינות — ממשיך בלי תמונות")
 
         # ----- Submit -----
         submit_btn = page.locator('button:has-text("סיום"), button:has-text("שמור")').last
